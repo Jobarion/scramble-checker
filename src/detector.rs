@@ -1,26 +1,27 @@
 use std::fmt::{Debug, Formatter};
-use std::ops::{Add, AddAssign};
-use opencv::core::{Point, Point2f, Point2i};
+use std::ops::{Add, AddAssign, Sub};
+
+use anyhow::Result;
+use opencv::core::{MatTraitConst, Point, Point2f, Vector};
+use opencv::imgproc::ContourApproximationModes::CHAIN_APPROX_SIMPLE;
+use opencv::imgproc::RetrievalModes::RETR_TREE;
 use opencv::prelude::Mat;
 
-use crate::{Bbox, Point2};
+use crate::{Bbox, Point2, YOLOResult};
+
+const MIN_FACE_AREA: f64 = 2000.0;
+const MAX_CNT_HULL_RATIO: f64 = 1.07;
+const FACE_POLY_APPROX_FACTOR: f64 = 0.02;
+
+pub type PuzzleFace = Vector<Point>;
 
 pub trait PuzzleDetector {
-    fn ingest_frame(&mut self, mat: &Mat, boxes: &Vec<Bbox>);
-}
-
-pub struct CubeNxNDetector<const N: usize> {
-    cube: CubePredictionNxN<N>
-}
-
-impl <const N: usize> PuzzleDetector for CubeNxNDetector<N> {
-    fn ingest_frame(&mut self, mat: &Mat, boxes: &Vec<Bbox>) {
-
-    }
+    fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>>;
+    fn ingest_frame(&mut self, mat: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()>;
 }
 
 pub struct CubePredictionNxN<const N: usize> {
-    faces: [FacePredictionNxN<N>; 6]
+    pub faces: [FacePredictionNxN<N>; 6]
 }
 
 impl <const N: usize> Default for CubePredictionNxN<N> {
@@ -31,7 +32,101 @@ impl <const N: usize> Default for CubePredictionNxN<N> {
     }
 }
 
+impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
+    fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>> {
+        get_face_poly(mat, face, 4)
+    }
+
+    fn ingest_frame(&mut self, img: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()> {
+        let facelets = facelets.bboxes.as_ref()
+            .and_then(|boxes|get_n_facelets(&face, boxes.clone(), N * N, 0f32, 10f32).transpose())
+            .transpose()?;
+        if let Some(facelets) = facelets {
+            let moments = opencv::imgproc::moments_def(&face)?;
+            let face_center = Point2::new((moments.m10 / moments.m00) as f32, (moments.m01 / moments.m00) as f32);
+            let grid = arrange_facelets_nxn_grid::<N>(&face_center, &facelets)?;
+            let mut prediction = FacePredictionNxN::<N>::default();
+            for x in 0..N {
+                for y in 0..N {
+                    let g = &grid[x][y];
+                    prediction.facelets[x][y].add_color(g.id() - 2, g.confidence());
+                }
+            }
+            self.ingest_face_prediction(&prediction);
+        }
+        Ok(())
+    }
+}
+
+fn get_n_facelets(face: &PuzzleFace, mut facelets: Vec<Bbox>, n: usize, max_diff: f32, min_dist_ignore: f32) -> Result<Option<Vec<Bbox>>>{
+    let mut deduplicated_facelets: Vec<Bbox> = vec![];
+    let min_dist_ignore = min_dist_ignore.powi(2);
+    facelets.sort_by(|x, y|y.confidence().total_cmp(&x.confidence()));
+    for b in facelets {
+        let center = b.cxcy();
+        let is_in_poly = opencv::imgproc::point_polygon_test(face, Point2f::new(center.x(), center.y()), false)? > 0f64;
+        if !is_in_poly {
+            continue
+        }
+        let is_distinct = deduplicated_facelets.iter()
+            .all(|d|center.dist_squared(&d.cxcy()) >= min_dist_ignore);
+        if is_distinct {
+            deduplicated_facelets.push(b)
+        }
+        if deduplicated_facelets.len() == n {
+            return Ok(Some(deduplicated_facelets))
+        }
+    }
+    Ok(None)
+}
+
+fn get_face_poly(img: &Mat, face: &YOLOResult, face_vertices: usize) -> Result<Option<Vector<Point>>> {
+    if let Some(masks) = face.masks() {
+        let mat = Mat::from_bytes::<u8>(masks[0].as_slice())?;
+        let mat = mat.reshape(0, img.size()?.height)?;
+        let mut contours: Vector<Mat> = Vector::new();
+        opencv::imgproc::find_contours(&mat, &mut contours, RETR_TREE.into(), CHAIN_APPROX_SIMPLE.into(), Point::default())?;
+
+        let mut hull = None;
+        for contour in contours {
+            let cnt_area = opencv::imgproc::contour_area(&contour, false)?;
+            if cnt_area < MIN_FACE_AREA {
+                continue
+            } else {
+                let mut hull_candidate: Vector<Point> = Vector::new();
+                opencv::imgproc::convex_hull(&contour, &mut hull_candidate, false, true)?;
+                let hull_area = opencv::imgproc::contour_area(&hull_candidate, false)?;
+                if hull_area / cnt_area > MAX_CNT_HULL_RATIO {
+                    continue
+                }
+                if hull.is_some() {
+                    return Ok(None)
+                } else {
+                    hull = Some(hull_candidate)
+                }
+            }
+        }
+
+        if let Some(hull) = hull {
+            let peri = opencv::imgproc::arc_length(&hull, true)?;
+            let mut approx_hull: Vector<Point> = Vector::new();
+            opencv::imgproc::approx_poly_dp(&hull, &mut approx_hull, FACE_POLY_APPROX_FACTOR * peri, true)?;
+            if approx_hull.len() != face_vertices {
+                return Ok(None)
+            }
+            return Ok(Some(approx_hull))
+        }
+        Ok(None)
+    } else {
+        Ok(None)
+    }
+}
+
 impl <const N: usize> CubePredictionNxN<N> {
+    pub fn get_n(&self) -> usize {
+        N
+    }
+
     pub fn ingest_face_prediction(&mut self, prediction: &FacePredictionNxN<N>) {
         let (best_face_id, best_rotation) = self.find_best_fit(prediction);
         let mut best_face = self.faces.get_mut(best_face_id).unwrap();
@@ -61,17 +156,73 @@ impl <const N: usize> CubePredictionNxN<N> {
         }
         return (best_face_idx, rotations[best_rot_idx])
     }
+}
 
-    fn get_best_facelets(boxes: Vec<Bbox>) {
+fn arrange_facelets_nxn_grid<const N: usize>(center: &Point2, facelets: &Vec<Bbox>) -> Result<[[Bbox; N]; N]> {
+    let outer_corner = facelets.iter()
+        .map(|x|x.cxcy())
+        .max_by(|x, y|x.dist_squared(center).total_cmp(&y.dist_squared(center)))
+        .unwrap();
+    let mut grid = [[Bbox::default(); N]; N];
 
+    _arrange_facelets_nxn_grid(center, &outer_corner, facelets.clone(), N, &mut grid)?;
+    Ok(grid)
+}
+
+fn _arrange_facelets_nxn_grid<const N: usize>(center: &Point2, outer_corner: &Point2, mut facelets: Vec<Bbox>, n: usize, mut grid: &mut [[Bbox; N]; N]) -> Result<()> {
+    if n == 1 {
+        grid[N / 2][N / 2] = facelets[0].clone();
+        return Ok(());
     }
 
-    // fn arrange_facelet_grid(center: Point2f, )
+    let mut hull = Vector::<Point>::new();
+    let mut facelets_cv2 = Vector::<Point>::new();
+    for facelet in facelets.iter() {
+        let cxcy = facelet.cxcy();
+        facelets_cv2.push(Point::new(cxcy.x() as i32, cxcy.y() as i32));
+    }
+    opencv::imgproc::convex_hull(&facelets_cv2, &mut hull, false, true)?;
+
+    facelets.sort_by_cached_key(|x|{
+        let center = x.cxcy();
+        (opencv::imgproc::point_polygon_test(&hull, Point2f::new(center.x(), center.y()), true).unwrap() * 100f64) as i32
+    });
+
+    let ring_size = N * 4 - 4;
+    let (mut outer_ring, rest) = facelets.split_at_mut(ring_size);
+    outer_ring.sort_by_cached_key(|x|{
+        let c = x.cxcy();
+        ((c.y() - center.y()).atan2(c.x() - center.x()) * 100.0) as i32
+    });
+
+    let closest_to_corner_id = outer_ring.iter().enumerate()
+        .min_by_key(|(_, x)|(x.cxcy().dist_squared(outer_corner) * 100.0) as i32)
+        .unwrap().0;
+
+    outer_ring.rotate_left(closest_to_corner_id);
+
+    let n1 = n - 1;
+    let offset = (N - n) / 2;
+    for x in 0..n1 {
+        grid[offset][x + offset] = outer_ring[x].clone();
+        grid[x + offset][n1 + offset] = outer_ring[n1 * 1 + x].clone();
+        grid[n1 + offset][n1 - x + offset] = outer_ring[n1 * 2 + x].clone();
+        grid[n1 - x + offset][offset] = outer_ring[n1 * 3 + x].clone();
+    }
+    if n > 2 {
+        _arrange_facelets_nxn_grid(center, outer_corner, rest.to_vec(), n - 2, grid)
+    } else {
+        Ok(())
+    }
+}
+
+fn cv2_dist_squared(a: &Point, b: &Point) -> f32 {
+    ((a.x - b.x).pow(2) + (a.y - b.y).pow(2)) as f32
 }
 
 #[derive(Copy, Clone)]
 pub struct FacePredictionNxN<const N: usize> {
-    facelets: [[FaceletPrediction<6>; N]; N]
+    pub facelets: [[FaceletPrediction<6>; N]; N]
 }
 
 impl <const N: usize> Default for FacePredictionNxN<N> {
@@ -217,28 +368,5 @@ impl <'b, const COLORS: usize> Add<&'b FaceletPrediction<COLORS>> for FaceletPre
         let mut s = &mut self;
         s += rhs;
         self
-    }
-}
-
-mod test {
-    use crate::detector::FacePredictionNxN;
-
-    #[test]
-    pub fn test_transpose() {
-        let mut face = FacePredictionNxN::<3>::default();
-        face.facelets[0][0].add_color(1, 0.8f32);
-        face.facelets[0][1].add_color(1, 0.4f32);
-        face.facelets[0][2].add_color(2, 0.8f32);
-        face.facelets[1][0].add_color(2, 0.3f32);
-        face.facelets[1][1].add_color(2, 0.5f32);
-        face.facelets[1][2].add_color(2, 0.6f32);
-        face.facelets[2][0].add_color(3, 0.8f32);
-        face.facelets[2][1].add_color(3, 0.4f32);
-        face.facelets[2][2].add_color(4, 0.8f32);
-        println!("{face:?}");
-        face.transpose();
-        println!("{face:?}");
-        face.rotate90();
-        println!("{face:?}");
     }
 }

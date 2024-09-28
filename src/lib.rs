@@ -1,21 +1,21 @@
 #![allow(clippy::type_complexity)]
 
 use std::io::{Read, Write};
+use std::time::{Duration, Instant};
 
-pub mod cli;
 pub mod model;
 pub mod ort_backend;
 pub mod yolo_result;
 pub mod convert;
-mod scanner;
-mod detector;
+pub mod scanner;
+pub mod detector;
 
 pub use crate::model::YOLOv8;
 pub use crate::ort_backend::{Batch, OrtBackend, OrtConfig, OrtEP, YOLOTask};
 pub use crate::yolo_result::{Bbox, Embedding, Point2, YOLOResult};
 
 pub fn non_max_suppression(
-    xs: &mut Vec<(Bbox, Option<Vec<Point2>>, Option<Vec<f32>>)>,
+    xs: &mut Vec<(Bbox, Option<Vec<f32>>)>,
     iou_threshold: f32,
 ) {
     xs.sort_by(|b1, b2| b2.0.confidence().partial_cmp(&b1.0.confidence()).unwrap());
@@ -121,3 +121,22 @@ pub fn check_font(font: &str) -> rusttype::Font<'static> {
     rusttype::Font::try_from_vec(buffer).unwrap()
 }
 
+pub struct Stopwatch(Instant);
+
+impl Default for Stopwatch {
+    fn default() -> Self {
+        Self(Instant::now())
+    }
+}
+
+impl Stopwatch {
+    pub fn elapsed_and_reset(&mut self) -> Duration {
+        let elapsed = self.0.elapsed();
+        self.reset();
+        elapsed
+    }
+
+    pub fn reset(&mut self) {
+        self.0 = Instant::now()
+    }
+}

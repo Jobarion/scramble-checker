@@ -3,7 +3,8 @@
 use std::cmp::max;
 
 use anyhow::Result;
-use image::GenericImageView;
+use image::{GenericImageView, ImageBuffer};
+use log::{debug, trace};
 use ndarray::{Array, Axis, IxDyn, s};
 use opencv::core::BorderTypes::BORDER_CONSTANT;
 use opencv::core::Size;
@@ -11,10 +12,7 @@ use opencv::imgproc::{ColorConversionCodes, InterpolationFlags};
 use opencv::prelude::*;
 use rand::{Rng, thread_rng};
 
-use crate::{
-    Batch, Bbox, OrtBackend,
-    OrtConfig, OrtEP, YOLOTask,
-};
+use crate::{Batch, Bbox, Embedding, non_max_suppression, OrtBackend, OrtConfig, OrtEP, Point2, Stopwatch, YOLOResult, YOLOTask};
 use crate::convert::try_mat_to_array;
 
 pub struct YOLOv8 {
@@ -34,7 +32,7 @@ pub struct YOLOv8 {
 }
 
 impl YOLOv8 {
-    pub fn new(ep: OrtEP, model: String, min_conf: f32, iou: f32) -> Result<Self> {
+    pub fn new(ep: OrtEP, model: String, task: YOLOTask, min_conf: f32, iou: f32) -> Result<Self> {
         // batch
         let batch = Batch {
             opt: 1,
@@ -47,7 +45,7 @@ impl YOLOv8 {
             ep,
             batch,
             f: model,
-            task: Some(YOLOTask::Segment),
+            task: Some(task),
             trt_fp16: false,
             image_size: (Some(640), Some(640)),
         };
@@ -142,76 +140,185 @@ impl YOLOv8 {
         Ok(arr)
     }
 
-    pub fn run(&mut self, input: &Mat) -> Result<Vec<Vec<Bbox>>> {
+    pub fn run(&mut self, input: &Mat) -> Result<Vec<YOLOResult>> {
+        let mut s = Stopwatch::default();
         let xs_ = self.preprocess(input)?;
+        debug!(target: "timings", "[Timing] Model preprocess: {:?}", s.elapsed_and_reset());
 
         // run
         let ys = self.engine.run(xs_)?;
+        debug!(target: "timings", "[Timing] Model run: {:?}", s.elapsed_and_reset());
 
         // post-process
-        let ys = self.postprocess(&ys[0], input)?;
+        let ys = self.postprocess(&ys, input)?;
+        debug!(target: "timings", "[Timing] Model postprocess: {:?}", s.elapsed_and_reset());
 
         Ok(ys)
     }
 
     pub fn postprocess(
         &self,
-        xs: &Array<f32, IxDyn>,
+        xs: &Vec<Array<f32, IxDyn>>,
         xs0: &Mat,
-    ) -> Result<Vec<Vec<Bbox>>> {
-        let original_size = xs0.size()?;
-        const CXYWH_OFFSET: usize = 4; // cxcywh
-        const KPT_STEP: usize = 3; // xyconf
-        let mut boxes = Vec::new();
-        for (idx, anchor) in xs.axis_iter(Axis(0)).enumerate() {
-            let t = std::time::Instant::now();
-            // [bs, 4 + nc + nm, anchors]
-            // input image
-            let width_original = original_size.width as f32;
-            let height_original = original_size.height as f32;
-            let ratio = (self.width() as f32 / width_original)
-                .min(self.height() as f32 / height_original);
+    ) -> Result<Vec<YOLOResult>> {
+        if let YOLOTask::Classify = self.task() {
+            let mut ys = Vec::new();
+            let preds = &xs[0];
+            for batch in preds.axis_iter(Axis(0)) {
+                ys.push(YOLOResult::new(
+                    Some(Embedding::new(batch.into_owned())),
+                    None,
+                    None,
+                ));
+            }
+            Ok(ys)
+        } else {
+            let original_size = xs0.size()?;
+            const CXYWH_OFFSET: usize = 4; // cxcywh
+            const KPT_STEP: usize = 3; // xyconf
+            let preds = &xs[0];
+            let protos = {
+                if xs.len() > 1 {
+                    Some(&xs[1])
+                } else {
+                    None
+                }
+            };
+            let mut ys = Vec::new();
+            for (idx, anchor) in preds.axis_iter(Axis(0)).enumerate() {
+                // [bs, 4 + nc + nm, anchors]
+                // input image
+                let width_original = original_size.width as f32;
+                let height_original = original_size.height as f32;
+                let ratio = (self.width() as f32 / width_original)
+                    .min(self.height() as f32 / height_original);
 
-            let mut result_boxes = Vec::new();
-            // save each result
-            for pred in anchor.axis_iter(Axis(1)) {
-                // split preds for different tasks
-                let bbox = pred.slice(s![0..CXYWH_OFFSET]);
-                let clss = pred.slice(s![CXYWH_OFFSET..CXYWH_OFFSET + self.nc() as usize]);
+                // save each result
+                let mut data: Vec<(Bbox, Option<Vec<f32>>)> = Vec::new();
+                for pred in anchor.axis_iter(Axis(1)) {
+                    // split preds for different tasks
+                    let bbox = pred.slice(s![0..CXYWH_OFFSET]);
+                    let clss = pred.slice(s![CXYWH_OFFSET..CXYWH_OFFSET + self.nc() as usize]);
+                    let coefs = {
+                        if let YOLOTask::Segment = self.task() {
+                            Some(pred.slice(s![pred.len() - self.nm() as usize..]).to_vec())
+                        } else {
+                            None
+                        }
+                    };
 
-                // confidence and id
-                let (id, &confidence) = clss
-                    .into_iter()
-                    .enumerate()
-                    .reduce(|max, x| if x.1 > max.1 { x } else { max })
-                    .unwrap(); // definitely will not panic!
+                    // confidence and id
+                    let (id, &confidence) = clss
+                        .into_iter()
+                        .enumerate()
+                        .reduce(|max, x| if x.1 > max.1 { x } else { max })
+                        .unwrap(); // definitely will not panic!
 
-                // confidence filter
-                if confidence < self.conf {
-                    continue;
+                    // confidence filter
+                    if confidence < self.conf {
+                        continue;
+                    }
+
+                    // bbox re-scale
+                    let cx = bbox[0] / ratio;
+                    let cy = bbox[1] / ratio;
+                    let w = bbox[2] / ratio;
+                    let h = bbox[3] / ratio;
+                    let x = cx - w / 2.;
+                    let y = cy - h / 2.;
+                    let y_bbox = Bbox::new(
+                        x.max(0.0f32).min(width_original),
+                        y.max(0.0f32).min(height_original),
+                        w,
+                        h,
+                        id,
+                        confidence,
+                    );
+
+                    // data merged
+                    data.push((y_bbox, coefs));
                 }
 
-                // bbox re-scale
-                let cx = bbox[0] / ratio;
-                let cy = bbox[1] / ratio;
-                let w = bbox[2] / ratio;
-                let h = bbox[3] / ratio;
-                let x = cx - w / 2.;
-                let y = cy - h / 2.;
-                let y_bbox = Bbox::new(
-                    x.max(0.0f32).min(width_original),
-                    y.max(0.0f32).min(height_original),
-                    w,
-                    h,
-                    id,
-                    confidence,
-                );
+                // nms
+                non_max_suppression(&mut data, self.iou);
 
-                result_boxes.push(y_bbox.clone());
+                // decode
+                let mut y_bboxes: Vec<Bbox> = Vec::new();
+                let mut y_masks: Vec<Vec<u8>> = Vec::new();
+                for elem in data.into_iter() {
+                    // decode masks
+                    if let Some(coefs) = elem.1 {
+                        let proto = protos.unwrap().slice(s![idx, .., .., ..]);
+                        let (nm, nh, nw) = proto.dim();
+
+                        // coefs * proto -> mask
+                        let coefs = Array::from_shape_vec((1, nm), coefs)?; // (n, nm)
+                        let proto = proto.to_owned().into_shape((nm, nh * nw))?; // (nm, nh*nw)
+                        let mask = coefs.dot(&proto).into_shape((nh, nw, 1))?; // (nh, nw, n)
+
+                        // build image from ndarray
+                        let mask_im: ImageBuffer<image::Luma<_>, Vec<f32>> =
+                            match ImageBuffer::from_raw(nw as u32, nh as u32, mask.into_raw_vec()) {
+                                Some(image) => image,
+                                None => panic!("can not create image from ndarray"),
+                            };
+                        let mut mask_im = image::DynamicImage::from(mask_im); // -> dyn
+
+                        // rescale masks
+                        let (_, w_mask, h_mask) =
+                            self.scale_wh(width_original, height_original, nw as f32, nh as f32);
+                        let mask_cropped = mask_im.crop(0, 0, w_mask as u32, h_mask as u32);
+                        let mask_original = mask_cropped.resize_exact(
+                            // resize_to_fill
+                            width_original as u32,
+                            height_original as u32,
+                            match self.task() {
+                                YOLOTask::Segment => image::imageops::FilterType::CatmullRom,
+                                _ => image::imageops::FilterType::Triangle,
+                            },
+                        );
+
+                        // crop-mask with bbox
+                        let mut mask_original_cropped = mask_original.into_luma8();
+                        for y in 0..height_original as usize {
+                            for x in 0..width_original as usize {
+                                if x < elem.0.xmin() as usize
+                                    || x > elem.0.xmax() as usize
+                                    || y < elem.0.ymin() as usize
+                                    || y > elem.0.ymax() as usize
+                                {
+                                    mask_original_cropped.put_pixel(
+                                        x as u32,
+                                        y as u32,
+                                        image::Luma([0u8]),
+                                    );
+                                }
+                            }
+                        }
+                        y_masks.push(mask_original_cropped.into_raw());
+                    }
+                    y_bboxes.push(elem.0);
+                }
+
+                // save each result
+                let y = YOLOResult {
+                    probs: None,
+                    bboxes: if !y_bboxes.is_empty() {
+                        Some(y_bboxes)
+                    } else {
+                        None
+                    },
+                    masks: if !y_masks.is_empty() {
+                        Some(y_masks)
+                    } else {
+                        None
+                    },
+                };
+                ys.push(y);
             }
-            boxes.push(result_boxes);
+
+            Ok(ys)
         }
-        return Ok(boxes);
     }
 
     pub fn summary(&self) {

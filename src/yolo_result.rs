@@ -1,11 +1,11 @@
 use ndarray::{Array, Axis, IxDyn};
+use opencv::core::{Point, Point2f};
 
 #[derive(Clone, PartialEq, Default)]
 pub struct YOLOResult {
     // YOLO tasks results of an image
     pub probs: Option<Embedding>,
     pub bboxes: Option<Vec<Bbox>>,
-    pub keypoints: Option<Vec<Vec<Point2>>>,
     pub masks: Option<Vec<Vec<u8>>>,
 }
 
@@ -17,7 +17,6 @@ impl std::fmt::Debug for YOLOResult {
                 &format_args!("{:?}", self.probs().map(|probs| probs.topk(5))),
             )
             .field("Bboxes", &self.bboxes)
-            .field("Keypoints", &self.keypoints)
             .field(
                 "Masks",
                 &format_args!("{:?}", self.masks().map(|masks| masks.len())),
@@ -30,23 +29,17 @@ impl YOLOResult {
     pub fn new(
         probs: Option<Embedding>,
         bboxes: Option<Vec<Bbox>>,
-        keypoints: Option<Vec<Vec<Point2>>>,
         masks: Option<Vec<Vec<u8>>>,
     ) -> Self {
         Self {
             probs,
             bboxes,
-            keypoints,
             masks,
         }
     }
 
     pub fn probs(&self) -> Option<&Embedding> {
         self.probs.as_ref()
-    }
-
-    pub fn keypoints(&self) -> Option<&Vec<Vec<Point2>>> {
-        self.keypoints.as_ref()
     }
 
     pub fn masks(&self) -> Option<&Vec<Vec<u8>>> {
@@ -68,6 +61,18 @@ pub struct Point2 {
     x: f32,
     y: f32,
     confidence: f32,
+}
+
+impl Into<Point> for &Point2 {
+    fn into(self) -> Point {
+        Point::new(self.x as i32, self.y as i32)
+    }
+}
+
+impl Into<Point2f> for &Point2 {
+    fn into(self) -> Point2f {
+        Point2f::new(self.x, self.y)
+    }
 }
 
 impl Point2 {
@@ -93,6 +98,10 @@ impl Point2 {
 
     pub fn confidence(&self) -> f32 {
         self.confidence
+    }
+
+    pub fn dist_squared(&self, other: &Self) -> f32 {
+        (self.x - other.x).powi(2) + (self.y - other.y).powi(2)
     }
 }
 
@@ -136,7 +145,7 @@ impl Embedding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Copy, Debug, Clone, PartialEq, Default)]
 pub struct Bbox {
     // a bounding box around an object
     xmin: f32,
