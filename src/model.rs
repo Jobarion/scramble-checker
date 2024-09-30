@@ -114,7 +114,7 @@ impl YOLOv8 {
         (r, (w0 * r).round(), (h0 * r).round())
     }
 
-    pub fn preprocess(&mut self, input: &Mat) -> Result<Array<f32, IxDyn>> {
+    pub fn preprocess(&self, input: &Mat) -> Result<Array<f32, IxDyn>> {
         let size = input.size()?;
         let mut resized = Mat::default();
         let (_, w_new, h_new) = self.scale_wh(size.width as f32, size.height as f32, 640f32, 640f32);
@@ -140,7 +140,7 @@ impl YOLOv8 {
         Ok(arr)
     }
 
-    pub fn run(&mut self, input: &Mat) -> Result<Vec<YOLOResult>> {
+    pub fn run(&self, input: &Mat) -> Result<Vec<YOLOResult>> {
         let mut s = Stopwatch::default();
         let xs_ = self.preprocess(input)?;
         debug!(target: "timings", "[Timing] Model preprocess: {:?}", s.elapsed_and_reset());

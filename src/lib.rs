@@ -1,3 +1,5 @@
+#![feature(get_many_mut)]
+#![feature(let_chains)]
 #![allow(clippy::type_complexity)]
 
 use std::io::{Read, Write};
@@ -7,12 +9,18 @@ pub mod model;
 pub mod ort_backend;
 pub mod yolo_result;
 pub mod convert;
-pub mod scanner;
 pub mod detector;
+pub mod puzzle;
+pub mod session;
 
 pub use crate::model::YOLOv8;
 pub use crate::ort_backend::{Batch, OrtBackend, OrtConfig, OrtEP, YOLOTask};
 pub use crate::yolo_result::{Bbox, Embedding, Point2, YOLOResult};
+
+// B G R
+// Blue, Green, Orange, Red, White, Yellow
+pub const COLORS: [(i32, i32, i32); 6] = [(255, 0, 0), (0, 255, 0), (0, 180, 255), (0, 0, 255), (255, 255, 255), (0, 255, 255)];
+pub const COLORS_OFFSET: usize = 2;
 
 pub fn non_max_suppression(
     xs: &mut Vec<(Bbox, Option<Vec<f32>>)>,
@@ -36,6 +44,22 @@ pub fn non_max_suppression(
         }
     }
     xs.truncate(current_index);
+}
+
+pub fn rotate90<T, const N: usize>(mut slice: &mut[[T; N]; N]) {
+    for n in 0..N/2 {
+        slice.swap(n, N - n - 1)
+    }
+    transpose(slice);
+}
+
+pub fn transpose<T, const N: usize>(mut slice: &mut[[T; N]; N]) {
+    for n in 0..N {
+        for m in 0..n {
+            let (x, y) = slice.split_at_mut(n);
+            std::mem::swap(&mut y[0][m], &mut x[m][n]);
+        }
+    }
 }
 
 pub fn gen_time_string(delimiter: &str) -> String {
