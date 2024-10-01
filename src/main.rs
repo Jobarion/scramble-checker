@@ -1,27 +1,71 @@
+use std::any::Any;
+use std::cmp::max;
 use std::error::Error;
+use std::fmt::format;
 use std::str::FromStr;
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+use clap::builder::Str;
+use clap::Parser;
+use imageproc::point::Point;
 use log::{debug, info, LevelFilter, trace};
 use opencv::{highgui, prelude::*, videoio};
 use opencv::core::Rect;
-use opencv::imgproc::{FILLED, LINE_8};
+use opencv::imgproc::{FILLED, FONT_HERSHEY_SCRIPT_SIMPLEX, FONT_HERSHEY_SIMPLEX, LINE_8};
+use opencv::videoio::VideoCapture;
 use simple_logger::SimpleLogger;
 use scramble_checker::{COLORS, OrtEP, Stopwatch, YOLOTask, YOLOv8};
 use scramble_checker::detector::{CubePrediction333, CubePredictionNxN, PuzzleDetector};
 use scramble_checker::puzzle::{BACK, Cube, CubeAlgorithm, DOWN, FRONT, LEFT, RIGHT, UP};
+use scramble_checker::session::DetectionSession;
 
+#[derive(Parser, Clone)]
+#[command(author, version, about, long_about = None)]
+pub struct Args {
+    #[arg(long, default_value = "333", value_parser = ["222", "333", "444", "555"])]
+    pub puzzle: String,
+    #[arg(long, required = true)]
+    pub scramble: String,
+}
+
+const MODEL_COLOR_SCHEME: [usize; 6] = [4, 5, 1, 0, 2, 3];
 
 fn main() -> anyhow::Result<()> {
     SimpleLogger::new()
-        .with_module_level("timings", LevelFilter::Info)
-        .with_level(LevelFilter::Info)
+        .with_module_level("timings", LevelFilter::Debug)
+        .with_level(LevelFilter::Debug)
         .init()?;
 
-    let window_out = "video output";
-    let debug_out = "dbg";
-    highgui::named_window(window_out, highgui::WINDOW_AUTOSIZE)?;
-    highgui::named_window(debug_out, highgui::WINDOW_AUTOSIZE)?;
-    let mut cam = videoio::VideoCapture::new(0, videoio::CAP_ANY)?; // 0 is the default camera
+    let args = Args::parse();
+
+    let alg = CubeAlgorithm::from_str(args.scramble.as_str())?;
+
+    let detector: Box<dyn PuzzleDetector> = match args.puzzle.as_str() {
+        "222" => {
+            let mut cube = Cube::<2>::new_with_scheme(MODEL_COLOR_SCHEME);
+            cube.turn_alg(&alg);
+            Box::new(CubePredictionNxN::<2>::new(cube))
+        },
+        "333" => {
+            let mut cube = Cube::<3>::new_with_scheme(MODEL_COLOR_SCHEME);
+            cube.turn_alg(&alg);
+            Box::new(CubePredictionNxN::<3>::new(cube))
+        },
+        "444" => {
+            let mut cube = Cube::<4>::new_with_scheme(MODEL_COLOR_SCHEME);
+            cube.turn_alg(&alg);
+            Box::new(CubePredictionNxN::<4>::new(cube))
+        },
+        "555" => {
+            let mut cube = Cube::<5>::new_with_scheme(MODEL_COLOR_SCHEME);
+            cube.turn_alg(&alg);
+            Box::new(CubePredictionNxN::<5>::new(cube))
+        },
+        _ => unreachable!()
+    };
+
+
+    let mut cam = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
 
     let opened = videoio::VideoCapture::is_opened(&cam)?;
 
@@ -38,101 +82,48 @@ fn main() -> anyhow::Result<()> {
     face_model.run(&frame)?;
     facelet_model.run(&frame)?;
 
-    let mut prediction = CubePredictionNxN::<3>::default();
-    // let mut cube = Cube::<3>::new_with_scheme([BACK, FRONT, LEFT, RIGHT, UP, DOWN]);
-    let mut cube = Cube::<3>::new_with_scheme([4, 5, 1, 0, 2, 3]);
-    cube.turn_alg(&CubeAlgorithm::from_str("R' U' F")?);
+    //The vision model has a fairly awkward color scheme, and it's my fault :(
+    // let mut cube = Cube::<5>::new_with_scheme(MODEL_COLOR_SCHEME);
+    // cube.turn_alg(&CubeAlgorithm::from_str("Rw 3Fw2 U'")?);
 
-    let mut s = Stopwatch::default();
+    let mut session = DetectionSession {
+        video_input: cam,
+        face_model: &face_model,
+        facelet_model: &facelet_model,
+        detector: detector,
+        draw_window: Some("output".to_string()),
+    };
+
+    let mut cooldown_until = Instant::now();
+    let mut last_result = 0.5;
     loop {
-        highgui::wait_key(1)?;
-        s.reset();
-        let mut frame = Mat::default();
-        cam.read(&mut frame)?;
-        debug!(target: "timings", "[Timing] Frame read: {:?}", s.elapsed_and_reset());
-        let mut output_frame = frame.clone();
-        print_cube_state(&mut output_frame, &prediction)?;
-        trace!(target: "timings", "[Timing] Draw cube state: {:?}", s.elapsed_and_reset());
-        let face_result = &face_model.run(&frame)?[0];
-        debug!(target: "timings", "[Timing] Face model run total: {:?}", s.elapsed_and_reset());
-        if face_result.bboxes.is_none() {
-            debug!("No face detected");
-            highgui::imshow(window_out, &output_frame)?;
-            continue
-        }
-        let detected_face = prediction.find_face(&frame, face_result)?;
-        debug!(target: "timings", "[Timing] Face result processing: {:?}", s.elapsed_and_reset());
-        if detected_face.is_none() {
-            debug!("No face detected");
-            highgui::imshow(window_out, &output_frame)?;
-            continue
-        }
-        let detected_face = detected_face.unwrap();
-        let facelet_result = &facelet_model.run(&frame)?[0];
-        debug!(target: "timings", "[Timing] Facelet model run total: {:?}", s.elapsed_and_reset());
-
-        prediction.ingest_frame(&frame, detected_face, facelet_result)?;
-        debug!(target: "timings", "[Timing] Ingest frame: {:?}", s.elapsed_and_reset());
-
-        for b in facelet_result.bboxes.iter().flat_map(|x|x.iter()).cloned() {
-            let rect = Rect::new(b.xmin() as i32, b.ymin() as i32, b.width() as i32, b.height() as i32);
-            opencv::imgproc::rectangle_def(&mut output_frame, rect, (0, 255, 0).into())?;
-        }
-        for b in face_result.bboxes.iter().flat_map(|x|x.iter()).cloned() {
-            let rect = Rect::new(b.xmin() as i32, b.ymin() as i32, b.width() as i32, b.height() as i32);
-            opencv::imgproc::rectangle_def(&mut output_frame, rect, (0, 0, 255).into())?;
-        }
-
-        debug!(target: "timings", "[Timing] Draw result: {:?}", s.elapsed_and_reset());
-
-        let (r, w, u) = prediction.compare_puzzle(&cube);
-        debug!(target: "timings", "[Timing] Comparing cube: {:?}", s.elapsed_and_reset());
-
-        let total = r + w + u;
-        let w = w as f32 / total as f32;
-        let u = u as f32 / total as f32;
-
-        if u <= UNKNOWN_THRESHOLD {
-            if w > WRONG_REJECT_THRESHOLD {
-                info!("Wrong!");
-                prediction = CubePrediction333::default();
-            } else {
-                info!("Right!");
-                prediction = CubePrediction333::default();
-            }
-        } else if w > WRONG_QUICK_REJECT_THRESHOLD {
-            info!("Wrong!");
-            prediction = CubePrediction333::default();
-        }
-
-        highgui::imshow(window_out, &output_frame)?;
-    }
-
-    Ok(())
-}
-
-fn print_cube_state<const N: usize>(mut frame: &mut Mat, cube: &CubePredictionNxN<N>) -> anyhow::Result<()> {
-    for i in 0..6 {
-        let offset_x = 0;
-        let offset_y = 0;
-        let tile_size = 10;
-        let face_spacing = 5;
-
-        for x in 0..cube.get_n() {
-            for y in 0..cube.get_n() {
-                let (cid, conf) = cube.faces[i].facelets[y][x].get_best();
-                let color = if conf > 0.7 {
-                    COLORS[cid]
+        // highgui::wait_key_def()?;
+        highgui::poll_key()?; // Needs to be called to refresh UI, we don't care about keys
+        if cooldown_until > Instant::now() {
+            let mut frame = session.read_frame()?;
+            session.draw_frame(||{
+                let (text, color) = if last_result > 0.5 {
+                    ("Correct", (0, 255, 0))
                 } else {
-                    (200, 200, 200)
+                    ("Incorrect", (0, 0, 255))
                 };
-                let x_start = offset_x + tile_size * x;
-                let y_start = offset_y + tile_size * (i * cube.get_n() + y) + face_spacing * i;
-
-                let rect = Rect::new(x_start as i32, y_start as i32, tile_size as i32, tile_size as i32);
-                opencv::imgproc::rectangle(&mut frame, rect, color.into(), FILLED, LINE_8, 0)?;
+                let size = frame.size()?;
+                opencv::imgproc::put_text(&mut frame, text, opencv::core::Point::new(40, 40), FONT_HERSHEY_SIMPLEX, 1.0, color.into(), 3, LINE_8, false)?;
+                Ok(frame)
+            })?;
+        } else if session.process_frame()? {
+            let conf = session.get_confidence();
+            if conf > 0.9 {
+                info!("Correct!");
+                session.reset();
+                last_result = conf;
+                cooldown_until = Instant::now() + Duration::from_secs(3);
+            } else if conf < 0.1 {
+                info!("Incorrect!");
+                session.reset();
+                last_result = conf;
+                cooldown_until = Instant::now() + Duration::from_secs(3);
             }
         }
     }
-    Ok(())
 }

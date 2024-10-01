@@ -6,7 +6,7 @@ use itertools::Itertools;
 
 use crate::rotate90;
 
-pub struct CubeAlgorithm(Vec<CubeTurn>);
+pub struct CubeAlgorithm(pub Vec<CubeTurn>);
 
 impl FromStr for CubeAlgorithm {
     type Err = std::fmt::Error;
@@ -20,9 +20,9 @@ impl FromStr for CubeAlgorithm {
 }
 
 pub struct CubeTurn {
-    face: usize,
-    layers: usize,
-    clockwise_qt: usize
+    pub face: usize,
+    pub layers: usize,
+    pub clockwise_qt: usize
 }
 
 impl FromStr for CubeTurn {
@@ -219,7 +219,7 @@ impl <const N: usize> Cube<N> {
 
     const TURN_TABLE: [[(usize, usize);4]; 6] = [
         [(FRONT, 0), (RIGHT, 0), (BACK, 0), (LEFT, 0)],
-        [(FRONT, 0), (LEFT, 0), (BACK, 0), (RIGHT, 0)],
+        [(FRONT, 2), (LEFT, 2), (BACK, 2), (RIGHT, 2)],
         [(UP, 2), (LEFT, 3), (DOWN, 0), (RIGHT, 1)],
         [(UP, 0), (RIGHT, 3), (DOWN, 2), (LEFT, 1)],
         [(UP, 1), (BACK, 3), (DOWN, 1), (FRONT, 1)],

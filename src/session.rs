@@ -6,16 +6,15 @@ use crate::detector::{CubePrediction333, PuzzleDetector};
 use crate::{Stopwatch, YOLOv8};
 use anyhow::Result;
 
-pub struct DetectionSession<'a, 'b, Puzzle, Detector: PuzzleDetector<Puzzle>> {
-    video_input: VideoCapture,
-    face_model: &'a YOLOv8,
-    facelet_model: &'b YOLOv8,
-    target_puzzle: Puzzle,
-    detector: Detector,
-    draw_window: Option<String>,
+pub struct DetectionSession<'a, 'b> {
+    pub video_input: VideoCapture,
+    pub face_model: &'a YOLOv8,
+    pub facelet_model: &'b YOLOv8,
+    pub detector: Box<dyn PuzzleDetector>,
+    pub draw_window: Option<String>,
 }
 
-impl <'a, 'b, Puzzle, Detector: PuzzleDetector<Puzzle>> DetectionSession<'a, 'b, Puzzle, Detector> {
+impl <'a, 'b> DetectionSession<'a, 'b> {
 
     const WRONG_QUICK_REJECT_THRESHOLD: f32 = 0.15;
     const UNKNOWN_THRESHOLD: f32 = 0.15;
@@ -25,7 +24,21 @@ impl <'a, 'b, Puzzle, Detector: PuzzleDetector<Puzzle>> DetectionSession<'a, 'b,
         self.detector.reset()
     }
 
-    pub fn next_frame(&mut self) -> Result<bool> {
+    pub fn read_frame(&mut self) -> Result<Mat> {
+        let mut frame = Mat::default();
+        self.video_input.read(&mut frame)?;
+        Ok(frame)
+    }
+
+    pub fn draw_frame(&self, func: impl FnOnce() -> Result<Mat>) -> Result<()> {
+        if let Some(window_out) = self.draw_window.as_ref() {
+            let frame = func()?;
+            highgui::imshow(window_out, &frame)?;
+        }
+        Ok(())
+    }
+
+    pub fn process_frame(&mut self) -> Result<bool> {
         let mut s = Stopwatch::default();
         let mut frame = Mat::default();
 
@@ -84,7 +97,7 @@ impl <'a, 'b, Puzzle, Detector: PuzzleDetector<Puzzle>> DetectionSession<'a, 'b,
 
     pub fn get_confidence(&self) -> f32 {
         let mut s = Stopwatch::default();
-        let (r, w, u) = self.detector.compare_puzzle(&self.target_puzzle);
+        let (r, w, u) = self.detector.compare_to_puzzle();
         debug!(target: "timings", "[Timing] Comparing puzzle: {:?}", s.elapsed_and_reset());
 
         let total = r + w + u;

@@ -25,27 +25,20 @@ pub type CubePrediction777 = CubePredictionNxN<7>;
 
 pub type PuzzleFace = Vector<Point>;
 
-pub trait PuzzleDetector<P> {
+pub trait PuzzleDetector {
     fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>>;
     fn ingest_frame(&mut self, mat: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()>;
-    fn compare_puzzle(&self, puzzle: &P) -> (usize, usize, usize);
     fn draw_state(&self, img: &mut Mat) -> Result<()>;
+    fn compare_to_puzzle(&self) -> (usize, usize, usize);
     fn reset(&mut self);
 }
 
 pub struct CubePredictionNxN<const N: usize> {
-    pub faces: [FacePredictionNxN<N>; 6]
+    pub faces: [FacePredictionNxN<N>; 6],
+    pub cube: Cube<N>
 }
 
-impl <const N: usize> Default for CubePredictionNxN<N> {
-    fn default() -> Self {
-        Self {
-            faces: [FacePredictionNxN::<N>::default(); 6],
-        }
-    }
-}
-
-impl <const N: usize> PuzzleDetector<Cube<N>> for CubePredictionNxN<N> {
+impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
     fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>> {
         get_face_poly(mat, face, 4)
     }
@@ -85,10 +78,36 @@ impl <const N: usize> PuzzleDetector<Cube<N>> for CubePredictionNxN<N> {
         Ok(())
     }
 
-    fn compare_puzzle(&self, cube: &Cube<N>) -> (usize, usize, usize) {
+    fn draw_state(&self, mut frame: &mut Mat) -> Result<()> {
+        for i in 0..6 {
+            let offset_x = 0;
+            let offset_y = 0;
+            let tile_size = 10;
+            let face_spacing = 5;
+
+            for x in 0..self.get_n() {
+                for y in 0..self.get_n() {
+                    let (cid, conf) = self.faces[i].facelets[y][x].get_best();
+                    let color = if conf > 0.7 {
+                        COLORS[cid]
+                    } else {
+                        (200, 200, 200)
+                    };
+                    let x_start = offset_x + tile_size * x;
+                    let y_start = offset_y + tile_size * (i * self.get_n() + y) + face_spacing * i;
+
+                    let rect = Rect::new(x_start as i32, y_start as i32, tile_size as i32, tile_size as i32);
+                    opencv::imgproc::rectangle(&mut frame, rect, color.into(), FILLED, LINE_8, 0)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compare_to_puzzle(&self) -> (usize, usize, usize) {
         let mut sum_right = 0;
         let mut sum_wrong = 0;
-        let mut available_cube_faces = cube.faces.clone().to_vec();
+        let mut available_cube_faces = self.cube.faces.clone().to_vec();
         let mut available_prediction_faces = self.faces.clone().to_vec();
         for _ in 0..6  {
             // println!("\nRun\n");
@@ -137,34 +156,8 @@ impl <const N: usize> PuzzleDetector<Cube<N>> for CubePredictionNxN<N> {
         (sum_right, sum_wrong, N * N * 6 - sum_right - sum_wrong)
     }
 
-    fn draw_state(&self, mut frame: &mut Mat) -> Result<()> {
-        for i in 0..6 {
-            let offset_x = 0;
-            let offset_y = 0;
-            let tile_size = 10;
-            let face_spacing = 5;
-
-            for x in 0..self.get_n() {
-                for y in 0..self.get_n() {
-                    let (cid, conf) = self.faces[i].facelets[y][x].get_best();
-                    let color = if conf > 0.7 {
-                        COLORS[cid]
-                    } else {
-                        (200, 200, 200)
-                    };
-                    let x_start = offset_x + tile_size * x;
-                    let y_start = offset_y + tile_size * (i * self.get_n() + y) + face_spacing * i;
-
-                    let rect = Rect::new(x_start as i32, y_start as i32, tile_size as i32, tile_size as i32);
-                    opencv::imgproc::rectangle(&mut frame, rect, color.into(), FILLED, LINE_8, 0)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn reset(&mut self) {
-        *self = Self::default()
+        *self = Self::new(self.cube)
     }
 }
 
@@ -237,6 +230,13 @@ impl <const N: usize> CubePredictionNxN<N> {
         N
     }
 
+    pub fn new(target: Cube<N>) -> Self {
+        Self {
+            faces: [FacePredictionNxN::<N>::default(); 6],
+            cube: target,
+        }
+    }
+
     pub fn ingest_face_prediction(&mut self, prediction: &FacePredictionNxN<N>) {
         let (best_face_id, best_rotation) = self.find_best_fit(prediction);
         let mut best_face = self.faces.get_mut(best_face_id).unwrap();
@@ -244,6 +244,43 @@ impl <const N: usize> CubePredictionNxN<N> {
     }
 
     fn find_best_fit(&self, prediction: &FacePredictionNxN<N>) -> (usize, FacePredictionNxN<N>) {
+        self.find_best_fit_wrong_right_weighted(prediction, -3, 1)
+    }
+
+    fn find_best_fit_wrong_right_weighted(&self, prediction: &FacePredictionNxN<N>, wrong_weight: i32, right_weight: i32) -> (usize, FacePredictionNxN<N>) {
+        let mut rotations = vec![];
+        let mut prediction = prediction.clone();
+        rotations.push(prediction.clone());
+        for _ in 0..3 {
+            prediction.rotate90();
+            rotations.push(prediction.clone());
+        }
+        let ((idx, _), rotation) = self.faces.iter()
+            .enumerate()
+            .cartesian_product(rotations.into_iter())
+            .max_by_key(|((idx, face), rface)|{
+                let mut wrong = 0;
+                let mut right = 0;
+                for x in 0..N {
+                    for y in 0..N {
+                        let facelet = &face.facelets[x][y];
+                        let rfacelet = &rface.facelets[x][y];
+                        if facelet.count > 0 {
+                            if facelet.get_best().0 == rfacelet.get_best().0 {
+                                right += 1;
+                            } else {
+                                wrong += 1;
+                            }
+                        }
+                    }
+                }
+                wrong * wrong_weight + right * right_weight
+            })
+            .unwrap();
+        (idx, rotation)
+    }
+
+    fn find_best_fit_min_err(&self, prediction: &FacePredictionNxN<N>) -> (usize, FacePredictionNxN<N>) {
         let mut rotations = vec![];
         let mut prediction = prediction.clone();
         rotations.push(prediction.clone());

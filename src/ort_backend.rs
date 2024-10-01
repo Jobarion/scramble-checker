@@ -273,10 +273,7 @@ impl OrtBackend {
         // fetch value from onnx model file by key
         match self.session.metadata() {
             Err(_) => None,
-            Ok(metadata) => match metadata.custom(key) {
-                Err(_) => None,
-                Ok(value) => value,
-            },
+            Ok(metadata) => metadata.custom(key).unwrap_or_else(|_| None),
         }
     }
 
