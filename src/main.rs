@@ -10,14 +10,14 @@ use clap::Parser;
 use imageproc::point::Point;
 use log::{debug, info, LevelFilter, trace};
 use opencv::{highgui, prelude::*, videoio};
-use opencv::core::Rect;
+use opencv::core::{Rect, Size};
 use opencv::imgproc::{FILLED, FONT_HERSHEY_SCRIPT_SIMPLEX, FONT_HERSHEY_SIMPLEX, LINE_8};
-use opencv::videoio::VideoCapture;
+use opencv::videoio::{VideoCapture, VideoWriter};
 use simple_logger::SimpleLogger;
 use scramble_checker::{COLORS, OrtEP, Stopwatch, YOLOTask, YOLOv8};
 use scramble_checker::detector::{CubePrediction333, CubePredictionNxN, PuzzleDetector};
 use scramble_checker::puzzle::{BACK, Cube, CubeAlgorithm, DOWN, FRONT, LEFT, RIGHT, UP};
-use scramble_checker::session::DetectionSession;
+use scramble_checker::session::{DetectionSession, Output};
 
 #[derive(Parser, Clone)]
 #[command(author, version, about, long_about = None)]
@@ -65,9 +65,9 @@ fn main() -> anyhow::Result<()> {
     };
 
 
-    let mut cam = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
-
-    let opened = videoio::VideoCapture::is_opened(&cam)?;
+    // let mut video_in = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
+    let mut video_in = videoio::VideoCapture::from_file_def("video.mp4")?;
+    let opened = videoio::VideoCapture::is_opened(&video_in)?;
 
     if !opened {
         panic!("Unable to open default camera!");
@@ -78,20 +78,20 @@ fn main() -> anyhow::Result<()> {
     let mut face_model = YOLOv8::new(OrtEP::Cuda(0), "face.onnx".to_string(), YOLOTask::Segment, 0.3, 0.45)?;
     face_model.summary();
     let mut frame = Mat::default();
-    cam.read(&mut frame)?;
+    video_in.read(&mut frame)?;
     face_model.run(&frame)?;
     facelet_model.run(&frame)?;
 
-    //The vision model has a fairly awkward color scheme, and it's my fault :(
-    // let mut cube = Cube::<5>::new_with_scheme(MODEL_COLOR_SCHEME);
-    // cube.turn_alg(&CubeAlgorithm::from_str("Rw 3Fw2 U'")?);
+
+    let fourcc_code = VideoWriter::fourcc('X', 'V', 'I', 'D')?;
+    let mut file = VideoWriter::new("output.avi", fourcc_code, 20.0, frame.size()?, true)?;
 
     let mut session = DetectionSession {
-        video_input: cam,
+        video_input: video_in,
         face_model: &face_model,
         facelet_model: &facelet_model,
         detector: detector,
-        draw_window: Some("output".to_string()),
+        outputs: vec![Output::Window("output".to_string()), Output::File(file)],
     };
 
     let mut cooldown_until = Instant::now();

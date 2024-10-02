@@ -25,6 +25,9 @@ pub type CubePrediction777 = CubePredictionNxN<7>;
 
 pub type PuzzleFace = Vector<Point>;
 
+type Color = usize;
+type ColorPrediction = (Color, f32);
+
 pub trait PuzzleDetector {
     fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>>;
     fn ingest_frame(&mut self, mat: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()>;
@@ -244,7 +247,7 @@ impl <const N: usize> CubePredictionNxN<N> {
     }
 
     fn find_best_fit(&self, prediction: &FacePredictionNxN<N>) -> (usize, FacePredictionNxN<N>) {
-        self.find_best_fit_wrong_right_weighted(prediction, -3, 1)
+        self.find_best_fit_wrong_right_weighted(prediction, -2, 1)
     }
 
     fn find_best_fit_wrong_right_weighted(&self, prediction: &FacePredictionNxN<N>, wrong_weight: i32, right_weight: i32) -> (usize, FacePredictionNxN<N>) {
@@ -431,44 +434,34 @@ impl <'b, const N: usize> Add<&'b FacePredictionNxN<N>> for FacePredictionNxN<N>
 
 #[derive(Copy, Clone)]
 pub struct FaceletPrediction<const COLORS: usize> {
-    colors: [f32; COLORS],
+    probabilities: [f32; COLORS],
+    target_color: Color,
     count: usize,
 }
 
-impl <const COLORS: usize> Default for FaceletPrediction<COLORS> {
-    fn default() -> Self {
+impl <const COLORS: usize> FaceletPrediction<COLORS> {
+    fn new(target_color: Color) -> Self {
         Self {
-            colors: [1f32 / COLORS as f32; COLORS],
+            probabilities: [1f32 / COLORS as f32; COLORS],
+            target_color,
             count: 0,
         }
     }
-}
 
-impl <const COLORS: usize> FaceletPrediction<COLORS> {
-    pub fn from_color(color: usize, conf: f32) -> FaceletPrediction<COLORS> {
-        let rest_conf = (1f32 - conf) / (COLORS - 1) as f32;
-        let mut colors = [rest_conf; COLORS];
-        colors[color] = conf;
-        FaceletPrediction {
-            colors,
-            count: 1
-        }
-    }
-
-    pub fn add_color(&mut self, color: usize, conf: f32) {
+    pub fn add_color(&mut self, color: Color, conf: f32) {
         let mut s = self;
-        s += &Self::from_color(color, conf)
+        s += (color, conf)
     }
 
     pub fn get_best(&self) -> (usize, f32) {
-        self.colors.iter().cloned()
+        self.probabilities.iter().cloned()
             .enumerate()
             .max_by(|(_, x), (_, y)|x.total_cmp(y))
             .unwrap()
     }
 
     pub fn diff_squared(&self, other: &Self) -> f32 {
-        self.colors.iter().zip(other.colors.iter())
+        self.probabilities.iter().zip(other.probabilities.iter())
             .map(|(x, y)|(x - y).powi(2))
             .sum()
     }
@@ -485,21 +478,25 @@ impl <const COLORS: usize> Debug for FaceletPrediction<COLORS> {
     }
 }
 
-impl <'a, 'b, const COLORS: usize> AddAssign<&'b FaceletPrediction<COLORS>> for &'a mut FaceletPrediction<COLORS> {
+impl <'a, 'b, const COLORS: usize> AddAssign<&'b ColorPrediction> for &'a mut FaceletPrediction<COLORS> {
 
-    fn add_assign(&mut self, rhs: &'b FaceletPrediction<COLORS>) {
+    fn add_assign(&mut self, rhs: &'b ColorPrediction) {
         for x in 0..COLORS {
-            let merged = self.colors[x] * self.count as f32 + rhs.colors[x] * rhs.count as f32;
-            self.colors[x] = merged / (self.count + rhs.count) as f32;
+            let new_probability = if x == rhs.0 {
+                self.probabilities[x] * self.count as f32 + rhs.1
+            } else {
+                self.probabilities[x] * self.count as f32
+            };
+            self.probabilities[x] = new_probability / (self.count + 1) as f32;
         }
-        self.count += rhs.count;
+        self.count += 1;
     }
 }
 
-impl <'b, const COLORS: usize> Add<&'b FaceletPrediction<COLORS>> for FaceletPrediction<COLORS> {
+impl <'b, const COLORS: usize> Add<&'b ColorPrediction> for FaceletPrediction<COLORS> {
     type Output = FaceletPrediction<COLORS>;
 
-    fn add(mut self, rhs: &'b FaceletPrediction<COLORS>) -> Self::Output {
+    fn add(mut self, rhs: &'b ColorPrediction) -> Self::Output {
         let mut s = &mut self;
         s += rhs;
         self
