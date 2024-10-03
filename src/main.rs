@@ -14,8 +14,8 @@ use opencv::core::{Rect, Size};
 use opencv::imgproc::{FILLED, FONT_HERSHEY_SCRIPT_SIMPLEX, FONT_HERSHEY_SIMPLEX, LINE_8};
 use opencv::videoio::{VideoCapture, VideoWriter};
 use simple_logger::SimpleLogger;
-use scramble_checker::{COLORS, OrtEP, Stopwatch, YOLOTask, YOLOv8};
-use scramble_checker::detector::{CubePrediction333, CubePredictionNxN, PuzzleDetector};
+use scramble_checker::{OrtEP, YOLOTask, YOLOv8};
+use scramble_checker::detector::{CubePredictionNxN, PuzzleDetector};
 use scramble_checker::puzzle::{BACK, Cube, CubeAlgorithm, DOWN, FRONT, LEFT, RIGHT, UP};
 use scramble_checker::session::{DetectionSession, Output};
 
@@ -73,9 +73,9 @@ fn main() -> anyhow::Result<()> {
         panic!("Unable to open default camera!");
     }
 
-    let mut facelet_model = YOLOv8::new(OrtEP::Cuda(0), "facelet.onnx".to_string(), YOLOTask::Detect, 0.3, 0.45)?;
+    let facelet_model = YOLOv8::new(OrtEP::Cuda(0), "facelet.onnx".to_string(), YOLOTask::Detect, 0.3, 0.45)?;
     facelet_model.summary();
-    let mut face_model = YOLOv8::new(OrtEP::Cuda(0), "face.onnx".to_string(), YOLOTask::Segment, 0.3, 0.45)?;
+    let face_model = YOLOv8::new(OrtEP::Cuda(0), "face.onnx".to_string(), YOLOTask::Segment, 0.3, 0.45)?;
     face_model.summary();
     let mut frame = Mat::default();
     video_in.read(&mut frame)?;
@@ -107,7 +107,6 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     ("Incorrect", (0, 0, 255))
                 };
-                let size = frame.size()?;
                 opencv::imgproc::put_text(&mut frame, text, opencv::core::Point::new(40, 40), FONT_HERSHEY_SIMPLEX, 1.0, color.into(), 3, LINE_8, false)?;
                 Ok(frame)
             })?;

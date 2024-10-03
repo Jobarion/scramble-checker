@@ -3,17 +3,17 @@
 use std::cmp::max;
 
 use anyhow::Result;
-use image::{GenericImageView, ImageBuffer};
-use log::{debug, trace};
-use ndarray::{Array, Axis, IxDyn, s};
+use image::ImageBuffer;
+use log::debug;
+use ndarray::{s, Array, Axis, IxDyn};
 use opencv::core::BorderTypes::BORDER_CONSTANT;
 use opencv::core::Size;
 use opencv::imgproc::{ColorConversionCodes, InterpolationFlags};
 use opencv::prelude::*;
-use rand::{Rng, thread_rng};
+use rand::{thread_rng, Rng};
 
-use crate::{Batch, Bbox, Embedding, non_max_suppression, OrtBackend, OrtConfig, OrtEP, Point2, Stopwatch, YOLOResult, YOLOTask};
 use crate::convert::try_mat_to_array;
+use crate::{non_max_suppression, Batch, Bbox, Embedding, OrtBackend, OrtConfig, OrtEP, Point2, Stopwatch, YOLOResult, YOLOTask};
 
 pub struct YOLOv8 {
     // YOLOv8 model for all yolo-tasks

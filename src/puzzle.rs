@@ -210,7 +210,7 @@ impl <const N: usize> Cube<N> {
             }
         }
         if turn.layers >= N {
-            let mut opposite_face = &mut self.faces[turn.face ^ 1];
+            let opposite_face = &mut self.faces[turn.face ^ 1];
             for _ in 0..(4 - qt) {
                 rotate90(&mut opposite_face.stickers);
             }

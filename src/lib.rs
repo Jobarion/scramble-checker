@@ -46,14 +46,14 @@ pub fn non_max_suppression(
     xs.truncate(current_index);
 }
 
-pub fn rotate90<T, const N: usize>(mut slice: &mut[[T; N]; N]) {
+pub fn rotate90<T, const N: usize>(slice: &mut[[T; N]; N]) {
     for n in 0..N/2 {
         slice.swap(n, N - n - 1)
     }
     transpose(slice);
 }
 
-pub fn transpose<T, const N: usize>(mut slice: &mut[[T; N]; N]) {
+pub fn transpose<T, const N: usize>(slice: &mut[[T; N]; N]) {
     for n in 0..N {
         for m in 0..n {
             let (x, y) = slice.split_at_mut(n);
