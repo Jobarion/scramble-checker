@@ -1,22 +1,14 @@
-use std::any::Any;
-use std::cmp::max;
-use std::error::Error;
-use std::fmt::format;
 use std::str::FromStr;
-use std::thread::sleep;
 use std::time::{Duration, Instant};
-use clap::builder::Str;
 use clap::Parser;
-use imageproc::point::Point;
-use log::{debug, info, LevelFilter, trace};
+use log::{info, LevelFilter};
 use opencv::{highgui, prelude::*, videoio};
-use opencv::core::{Rect, Size};
-use opencv::imgproc::{FILLED, FONT_HERSHEY_SCRIPT_SIMPLEX, FONT_HERSHEY_SIMPLEX, LINE_8};
-use opencv::videoio::{VideoCapture, VideoWriter};
+use opencv::imgproc::{FONT_HERSHEY_SIMPLEX, LINE_8};
+use opencv::videoio::VideoWriter;
 use simple_logger::SimpleLogger;
 use scramble_checker::{OrtEP, YOLOTask, YOLOv8};
 use scramble_checker::detector::{CubePredictionNxN, PuzzleDetector};
-use scramble_checker::puzzle::{BACK, Cube, CubeAlgorithm, DOWN, FRONT, LEFT, RIGHT, UP};
+use scramble_checker::puzzle::{Cube, CubeAlgorithm};
 use scramble_checker::session::{DetectionSession, Output};
 
 #[derive(Parser, Clone)]
@@ -32,7 +24,7 @@ const MODEL_COLOR_SCHEME: [usize; 6] = [4, 5, 1, 0, 2, 3];
 
 fn main() -> anyhow::Result<()> {
     SimpleLogger::new()
-        .with_module_level("timings", LevelFilter::Debug)
+        .with_module_level("timings", LevelFilter::Info)
         .with_level(LevelFilter::Debug)
         .init()?;
 
@@ -65,8 +57,8 @@ fn main() -> anyhow::Result<()> {
     };
 
 
-    // let mut video_in = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
-    let mut video_in = videoio::VideoCapture::from_file_def("video.mp4")?;
+    let mut video_in = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
+    // let mut video_in = videoio::VideoCapture::from_file_def("video.mp4")?;
     let opened = videoio::VideoCapture::is_opened(&video_in)?;
 
     if !opened {
@@ -84,7 +76,7 @@ fn main() -> anyhow::Result<()> {
 
 
     let fourcc_code = VideoWriter::fourcc('X', 'V', 'I', 'D')?;
-    let mut file = VideoWriter::new("output.avi", fourcc_code, 20.0, frame.size()?, true)?;
+    let file = VideoWriter::new("output.avi", fourcc_code, 20.0, frame.size()?, true)?;
 
     let mut session = DetectionSession {
         video_input: video_in,

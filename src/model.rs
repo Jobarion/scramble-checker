@@ -13,7 +13,7 @@ use opencv::prelude::*;
 use rand::{thread_rng, Rng};
 
 use crate::convert::try_mat_to_array;
-use crate::{non_max_suppression, Batch, Bbox, Embedding, OrtBackend, OrtConfig, OrtEP, Point2, Stopwatch, YOLOResult, YOLOTask};
+use crate::{non_max_suppression, Batch, Bbox, Embedding, OrtBackend, OrtConfig, OrtEP, Stopwatch, YOLOResult, YOLOTask};
 
 pub struct YOLOv8 {
     // YOLOv8 model for all yolo-tasks

@@ -5,6 +5,7 @@ use crate::puzzle::Cube;
 use crate::{rotate90, Bbox, Point2, YOLOResult, COLORS};
 use anyhow::Result;
 use itertools::Itertools;
+use log::debug;
 use opencv::core::{MatTraitConst, Point, Point2f, Rect, Vector};
 use opencv::imgproc::ContourApproximationModes::CHAIN_APPROX_SIMPLE;
 use opencv::imgproc::RetrievalModes::RETR_TREE;
@@ -46,33 +47,31 @@ impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
         get_face_poly(mat, face, 4)
     }
 
-    fn ingest_frame(&mut self, _img: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()> {
+    fn ingest_frame(&mut self, img: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()> {
         let facelets = facelets.bboxes.as_ref()
             .and_then(|boxes|get_n_facelets(&face, boxes.clone(), N * N, 0f32, 10f32).transpose())
             .transpose()?;
         if let Some(facelets) = facelets {
-            // let mut img = img.clone();
-            // for i in 1..face.len() {
-            //     opencv::imgproc::line(&mut img, face.get(i - 1).unwrap(), face.get(i).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
-            // }
-            // opencv::imgproc::line(&mut img, face.get(face.len() - 1).unwrap(), face.get(0).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
+            let mut img = img.clone();
+            for i in 1..face.len() {
+                opencv::imgproc::line(&mut img, face.get(i - 1).unwrap(), face.get(i).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
+            }
+            opencv::imgproc::line(&mut img, face.get(face.len() - 1).unwrap(), face.get(0).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
 
             let moments = opencv::imgproc::moments_def(&face)?;
             let face_center = Point2::new((moments.m10 / moments.m00) as f32, (moments.m01 / moments.m00) as f32);
 
-            // opencv::imgproc::line(&mut img, face.get(face.len() - 1).unwrap(), face.get(0).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
-
             let grid = arrange_facelets_nxn_grid::<N>(&face_center, &facelets)?;
-            // for x in 0..N {
-            //     for y in 0..N {
-            //         let c = g.cxcy();
-            //         opencv::imgproc::circle(&mut img, Point::new(c.x() as i32, c.y() as i32), 9, (0, 0, 0).into(), FILLED, LINE_8, 0)?;
-            //         opencv::imgproc::circle(&mut img, Point::new(c.x() as i32, c.y() as i32), 7, COLORS[cid].into(), FILLED, LINE_8, 0)?;
-            //     }
-            // }
+            for x in 0..N {
+                for y in 0..N {
+                    let g = &grid[x][y];
+                    let c = g.cxcy();
+                    opencv::imgproc::circle(&mut img, Point::new(c.x() as i32, c.y() as i32), 9, (0, 0, 0).into(), FILLED, LINE_8, 0)?;
+                    opencv::imgproc::circle(&mut img, Point::new(c.x() as i32, c.y() as i32), 7, COLORS[g.id() - 2].into(), FILLED, LINE_8, 0)?;
+                }
+            }
             self.ingest_face_prediction(&grid);
-
-            // opencv::highgui::imshow("dbg", &img)?;
+            opencv::highgui::imshow("dbg", &img)?;
         }
         Ok(())
     }
@@ -83,6 +82,8 @@ impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
             let offset_y = 0;
             let tile_size = 10;
             let face_spacing = 5;
+
+            // debug!("{:?}", self.faces[i]);
 
             for x in 0..self.get_n() {
                 for y in 0..self.get_n() {
@@ -252,7 +253,7 @@ impl <const N: usize> CubePredictionNxN<N> {
         for x in 0..N {
             for y in 0..N {
                 let g = grid[x][y];
-                predictions[x][y] = (g.id(), OrderedFloat(g.confidence()));
+                predictions[x][y] = (g.id() - 2, OrderedFloat(g.confidence()));
             }
         }
         self.find_best_fit_min_squared_error(&predictions)
@@ -414,14 +415,18 @@ impl <const COLORS: usize> Debug for FaceletPrediction<COLORS> {
 impl <'a, 'b, const COLORS: usize> AddAssign<&'b ColorPrediction> for &'a mut FaceletPrediction<COLORS> {
 
     fn add_assign(&mut self, rhs: &'b ColorPrediction) {
+        println!("Pre {:?}", self.probabilities);
+        println!("Add {rhs:?}");
         for x in 0..COLORS {
             let new_probability = if x == rhs.0 {
                 self.probabilities[x] * self.count as f32 + rhs.1
             } else {
                 self.probabilities[x] * self.count as f32
             };
+            println!("New probability {new_probability}");
             self.probabilities[x] = new_probability / (self.count + 1) as f32;
         }
+        println!("Post {:?}", self.probabilities);
         self.count += 1;
     }
 }

@@ -1,8 +1,8 @@
-use log::{debug, info, trace};
+use log::{debug, trace};
 use opencv::core::{Mat, Rect};
 use opencv::highgui;
 use opencv::videoio::{VideoCapture, VideoCaptureTrait, VideoWriter, VideoWriterTrait};
-use crate::detector::{CubePrediction333, PuzzleDetector};
+use crate::detector::PuzzleDetector;
 use crate::{Stopwatch, YOLOv8};
 use anyhow::Result;
 

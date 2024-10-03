@@ -228,9 +228,9 @@ impl <const N: usize> Cube<N> {
 }
 
 pub mod test {
-    use std::str::FromStr;
+    
 
-    use crate::puzzle::{Cube, CubeAlgorithm};
+    
 
     #[test]
     pub fn cube_test() {
