@@ -23,3 +23,4 @@ opencv = { version = "0.93.1", default-features = false, features = ["highgui", 
 log = { version = "0.4.20", features = ["kv", "max_level_trace", "release_max_level_debug"] }
 simple_logger = "5.0.0"
 itertools = "0.13.0"
+ordered-float = "4.3.0"
