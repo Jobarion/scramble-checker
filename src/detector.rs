@@ -5,12 +5,13 @@ use crate::puzzle::Cube;
 use crate::{Bbox, Point2, YOLOResult, COLORS, Frame};
 use anyhow::Result;
 use itertools::Itertools;
+use kmeans::{KMeans, KMeansConfig};
 use log::debug;
-use opencv::core::{MatTraitConst, Point, Point2f, Rect, Vector};
+use opencv::core::{MatTraitConst, Point, Point2f, Rect, Vector, CV_32F};
 use opencv::imgproc::ContourApproximationModes::CHAIN_APPROX_SIMPLE;
 use opencv::imgproc::RetrievalModes::RETR_TREE;
 use opencv::imgproc::{FILLED, LINE_8};
-use opencv::prelude::Mat;
+use opencv::prelude::{Mat, MatTraitConstManual};
 use ordered_float::{OrderedFloat, Pow};
 use crate::util::rotate90;
 
@@ -66,8 +67,45 @@ impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
                 for y in 0..N {
                     let g = &grid[x][y];
                     let c = g.cxcy();
+
+                    let roi = Rect::new(g.xmin() as i32, g.ymin() as i32, (g.xmax() - g.xmin()) as i32, (g.ymax() - g.ymin()) as i32);
+                    println!("Calc roi: {:?}", roi);
+                    let size = roi.size();
+                    let roi = frame.output.roi(roi)?;
+                    let mut roif = Mat::default();
+
+                    let roi = roi.convert_to_def(&mut roif, CV_32F);
+
+                    println!("Extracted roi");
+                    println!("{:?}", roif.size());
+
+                    // let criteria =
+
+                    // opencv::core::kmeans_def()
+
+                    // let points: Vec<f32> = roi.clone_pointee().data_bytes()?.iter()
+                    //     .map(|x|*x as f32)
+                    //     .collect();
+                    // println!("Points!");
+
+                    // let size = points.len();
+                    //
+                    // let kmeans: KMeans<_, 8> = KMeans::new(points, size / 3, 3);
+                    // let result = kmeans.kmeans_lloyd(2, 100, KMeans::init_kmeanplusplus, &KMeansConfig::default());
+                    // let most_frequent = result.centroid_frequency.iter()
+                    //     .enumerate()
+                    //     .max_by_key(|(_, x)|x.clone())
+                    //     .unwrap()
+                    //     .0;
+                    // let cr = result.centroids[most_frequent + 2] as i32;
+                    // let cg = result.centroids[most_frequent + 1] as i32;
+                    // let cb = result.centroids[most_frequent + 0] as i32;
+
+
+
                     opencv::imgproc::circle(&mut frame.output, Point::new(c.x() as i32, c.y() as i32), 9, (0, 0, 0).into(), FILLED, LINE_8, 0)?;
                     opencv::imgproc::circle(&mut frame.output, Point::new(c.x() as i32, c.y() as i32), 7, COLORS[g.id() - 2].into(), FILLED, LINE_8, 0)?;
+                    // opencv::imgproc::circle(&mut frame.output, Point::new(c.x() as i32, c.y() as i32), 7, (cr, cg, cb).into(), FILLED, LINE_8, 0)?;
                 }
             }
             self.ingest_face_prediction(&grid);

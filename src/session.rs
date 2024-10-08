@@ -81,6 +81,7 @@ impl <'a, 'b> DetectionSession<'a, 'b> {
             debug!("No face detected");
             return Ok((false, frame))
         }
+
         let detected_face = detected_face.unwrap();
         let facelet_result = &self.facelet_model.run(&frame.input)?[0];
         debug!(target: "timings", "[Timing] Facelet model run total: {:?}", s.elapsed_and_reset());

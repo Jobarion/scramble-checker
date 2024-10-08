@@ -1,14 +1,12 @@
-use std::path::Path;
 use clap::Parser;
 use log::LevelFilter;
 use opencv::prelude::*;
 use serde::Deserialize;
 use simple_logger::SimpleLogger;
 
-use scramble_checker::{Args, init_face_model, init_facelet_model, Mode, run_detection, YOLOv8};
+use scramble_checker::{init_face_model, init_facelet_model, run_detection, Args, Mode, YOLOv8};
 
 fn main() -> anyhow::Result<()> {
-
     let args = Args::parse();
 
     let facelet_model = init_facelet_model()?;
@@ -26,9 +24,8 @@ fn main() -> anyhow::Result<()> {
             .init()?;
         run_detection(&face_model, &facelet_model, &args)?;
     }
-    return Ok(())
+    Ok(())
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 struct LengthTestCase {

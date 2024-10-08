@@ -124,9 +124,9 @@ pub fn run_detection(face_model: &YOLOv8, facelet_model: &YOLOv8, args: &Args) -
     let outputs = if args.mode == Mode::Test {
         vec![Output::Window("output".to_string())]
     } else {
-        let fourcc_code = VideoWriter::fourcc('X', 'V', 'I', 'D')?;
-        let file = VideoWriter::new("output.avi", fourcc_code, 20.0, frame.size()?, true)?;
-        vec![Output::Window("output".to_string()), Output::File(file)]
+        // let fourcc_code = VideoWriter::fourcc('X', 'V', 'I', 'D')?;
+        // let file = VideoWriter::new("output.avi", fourcc_code, 20.0, frame.size()?, true)?;
+        vec![Output::Window("output".to_string())]
     };
 
     let mut session = DetectionSession {
@@ -141,8 +141,8 @@ pub fn run_detection(face_model: &YOLOv8, facelet_model: &YOLOv8, args: &Args) -
     let mut last_result = 0.5;
     loop {
         if args.mode == Mode::Verify {
-            highgui::wait_key(0)?;
-            // highgui::poll_key()?;
+            // highgui::wait_key(0)?;
+            highgui::poll_key()?;
         } else {
             highgui::poll_key()?; // Needs to be called to refresh UI, we don't actually care about keys
         }
