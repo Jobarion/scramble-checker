@@ -4,7 +4,7 @@ use std::cmp::max;
 
 use anyhow::Result;
 use image::ImageBuffer;
-use log::debug;
+use log::{debug, info};
 use ndarray::{s, Array, Axis, IxDyn};
 use opencv::core::BorderTypes::BORDER_CONSTANT;
 use opencv::core::Size;
@@ -13,7 +13,8 @@ use opencv::prelude::*;
 use rand::{thread_rng, Rng};
 
 use crate::convert::try_mat_to_array;
-use crate::{non_max_suppression, Batch, Bbox, Embedding, OrtBackend, OrtConfig, OrtEP, Stopwatch, YOLOResult, YOLOTask};
+use crate::{Batch, Bbox, Embedding, OrtBackend, OrtConfig, OrtEP, YOLOResult, YOLOTask};
+use crate::util::Stopwatch;
 
 pub struct YOLOv8 {
     // YOLOv8 model for all yolo-tasks
@@ -118,7 +119,7 @@ impl YOLOv8 {
         let size = input.size()?;
         let mut resized = Mat::default();
         let (_, w_new, h_new) = self.scale_wh(size.width as f32, size.height as f32, 640f32, 640f32);
-        opencv::imgproc::resize(&input, &mut resized, Size::new(w_new as i32, h_new as i32), 0f64, 0f64, InterpolationFlags::INTER_CUBIC.into()).unwrap();
+        opencv::imgproc::resize(&input, &mut resized, Size::new(w_new as i32, h_new as i32), 0f64, 0f64, InterpolationFlags::INTER_CUBIC.into())?;
 
         let resized_size = resized.size()?;
         let bh = max(0, self.width as i32 - resized_size.width);
@@ -240,7 +241,7 @@ impl YOLOv8 {
                 }
 
                 // nms
-                non_max_suppression(&mut data, self.iou);
+                Self::non_max_suppression(&mut data, self.iou);
 
                 // decode
                 let mut y_bboxes: Vec<Bbox> = Vec::new();
@@ -322,7 +323,7 @@ impl YOLOv8 {
     }
 
     pub fn summary(&self) {
-        println!(
+        info!(
             "\nSummary:\n\
             > Task: {:?}{}\n\
             > EP: {:?} {}\n\
@@ -413,5 +414,29 @@ impl YOLOv8 {
 
     pub fn names(&self) -> &Vec<String> {
         &self.names
+    }
+
+    fn non_max_suppression(
+        xs: &mut Vec<(Bbox, Option<Vec<f32>>)>,
+        iou_threshold: f32,
+    ) {
+        xs.sort_by(|b1, b2| b2.0.confidence().partial_cmp(&b1.0.confidence()).unwrap());
+
+        let mut current_index = 0;
+        for index in 0..xs.len() {
+            let mut drop = false;
+            for prev_index in 0..current_index {
+                let iou = xs[prev_index].0.iou(&xs[index].0);
+                if iou > iou_threshold {
+                    drop = true;
+                    break;
+                }
+            }
+            if !drop {
+                xs.swap(current_index, index);
+                current_index += 1;
+            }
+        }
+        xs.truncate(current_index);
     }
 }

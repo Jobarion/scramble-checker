@@ -3,8 +3,7 @@ use std::mem::swap;
 use std::str::FromStr;
 
 use itertools::Itertools;
-
-use crate::rotate90;
+use crate::util::rotate90;
 
 pub struct CubeAlgorithm(pub Vec<CubeTurn>);
 
@@ -228,14 +227,13 @@ impl <const N: usize> Cube<N> {
 }
 
 pub mod test {
-    
-
-    
+    use std::str::FromStr;
+    use crate::puzzle::{Cube, CubeAlgorithm};
 
     #[test]
     pub fn cube_test() {
-        let mut cube = Cube::<3>::default();
-        let alg = CubeAlgorithm::from_str("R' U' F").unwrap();
+        let mut cube = Cube::<4>::default();
+        let alg = CubeAlgorithm::from_str("L2 U' R' B D2 U' F D U' R B2 F2 U F2 U L2 F2 L2 Rw2 Uw2 L U Fw2 D2 Rw2 B2 U' B2 Rw2 Fw L' Uw2 L2 R' Rw Fw' B' Rw' Uw2 Fw F2 R").unwrap();
         for t in alg.0.iter() {
             cube.turn(t);
         }

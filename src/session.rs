@@ -3,8 +3,9 @@ use opencv::core::{Mat, Rect};
 use opencv::highgui;
 use opencv::videoio::{VideoCapture, VideoCaptureTrait, VideoWriter, VideoWriterTrait};
 use crate::detector::PuzzleDetector;
-use crate::{Stopwatch, YOLOv8};
 use anyhow::Result;
+use crate::util::Stopwatch;
+use crate::{Frame, YOLOv8};
 
 pub struct DetectionSession<'a, 'b> {
     pub video_input: VideoCapture,
@@ -39,10 +40,13 @@ impl <'a, 'b> DetectionSession<'a, 'b> {
         self.detector.reset()
     }
 
-    pub fn read_frame(&mut self) -> Result<Mat> {
+    pub fn read_frame(&mut self) -> Result<Option<Mat>> {
         let mut frame = Mat::default();
-        self.video_input.read(&mut frame)?;
-        Ok(frame)
+        if self.video_input.read(&mut frame)? {
+            Ok(Some(frame))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn draw_frame(&mut self, func: impl FnOnce() -> Result<Mat>) -> Result<()> {
@@ -55,55 +59,47 @@ impl <'a, 'b> DetectionSession<'a, 'b> {
         Ok(())
     }
 
-    pub fn process_frame(&mut self) -> Result<bool> {
+    pub fn process_frame(&mut self) -> Result<(bool, Frame)> {
         let mut s = Stopwatch::default();
         let mut frame = Mat::default();
 
         self.video_input.read(&mut frame)?;
         debug!(target: "timings", "[Timing] Frame read: {:?}", s.elapsed_and_reset());
 
-        let mut output_frame = frame.clone();
-        if !self.outputs.is_empty() {
-            self.detector.draw_state(&mut output_frame)?;
-            trace!(target: "timings", "[Timing] Draw cube state: {:?}", s.elapsed_and_reset());
-        }
+        let mut frame = Frame::new(frame);
 
-        let face_result = &self.face_model.run(&frame)?[0];
+        let face_result = &self.face_model.run(&frame.input)?[0];
         debug!(target: "timings", "[Timing] Face model run total: {:?}", s.elapsed_and_reset());
         if face_result.bboxes.is_none() {
             debug!("No face detected");
-            self.draw_frame(||Ok(output_frame))?;
-            return Ok(false)
+            return Ok((false, frame))
         }
 
-        let detected_face = self.detector.find_face(&frame, face_result)?;
+        let detected_face = self.detector.find_face(&mut frame, face_result)?;
         debug!(target: "timings", "[Timing] Face result processing: {:?}", s.elapsed_and_reset());
         if detected_face.is_none() {
             debug!("No face detected");
-            self.draw_frame(||Ok(output_frame))?;
-            return Ok(false)
+            return Ok((false, frame))
         }
         let detected_face = detected_face.unwrap();
-        let facelet_result = &self.facelet_model.run(&frame)?[0];
+        let facelet_result = &self.facelet_model.run(&frame.input)?[0];
         debug!(target: "timings", "[Timing] Facelet model run total: {:?}", s.elapsed_and_reset());
 
-        self.detector.ingest_frame(&frame, detected_face, facelet_result)?;
+        self.detector.ingest_frame(&mut frame, detected_face, facelet_result)?;
         debug!(target: "timings", "[Timing] Ingest frame: {:?}", s.elapsed_and_reset());
 
         if !self.outputs.is_empty() {
             for b in facelet_result.bboxes.iter().flat_map(|x|x.iter()).cloned() {
                 let rect = Rect::new(b.xmin() as i32, b.ymin() as i32, b.width() as i32, b.height() as i32);
-                opencv::imgproc::rectangle_def(&mut output_frame, rect, (0, 255, 0).into())?;
+                opencv::imgproc::rectangle_def(&mut frame.output, rect, (0, 255, 0).into())?;
             }
             for b in face_result.bboxes.iter().flat_map(|x|x.iter()).cloned() {
                 let rect = Rect::new(b.xmin() as i32, b.ymin() as i32, b.width() as i32, b.height() as i32);
-                opencv::imgproc::rectangle_def(&mut output_frame, rect, (0, 0, 255).into())?;
+                opencv::imgproc::rectangle_def(&mut frame.output, rect, (0, 0, 255).into())?;
             }
         }
         debug!(target: "timings", "[Timing] Draw result: {:?}", s.elapsed_and_reset());
-
-        self.draw_frame(||Ok(output_frame))?;
-        Ok(true)
+        Ok((true, frame))
     }
 
     pub fn get_confidence(&self) -> f32 {

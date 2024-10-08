@@ -1,3 +1,7 @@
 /target
 *.onnx
 .idea/
+tests/
+*.mp4
+*.avi
+*.dll

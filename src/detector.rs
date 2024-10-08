@@ -2,7 +2,7 @@ use std::fmt::{Debug, Formatter};
 use std::ops::{Add, AddAssign};
 
 use crate::puzzle::Cube;
-use crate::{rotate90, Bbox, Point2, YOLOResult, COLORS};
+use crate::{Bbox, Point2, YOLOResult, COLORS, Frame};
 use anyhow::Result;
 use itertools::Itertools;
 use log::debug;
@@ -12,6 +12,7 @@ use opencv::imgproc::RetrievalModes::RETR_TREE;
 use opencv::imgproc::{FILLED, LINE_8};
 use opencv::prelude::Mat;
 use ordered_float::{OrderedFloat, Pow};
+use crate::util::rotate90;
 
 const MIN_FACE_AREA: f64 = 2000.0;
 const MAX_CNT_HULL_RATIO: f64 = 1.07;
@@ -30,8 +31,8 @@ type Color = usize;
 type ColorPrediction = (Color, OrderedFloat<f32>);
 
 pub trait PuzzleDetector {
-    fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>>;
-    fn ingest_frame(&mut self, mat: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()>;
+    fn find_face(&mut self, frame: &mut Frame, face: &YOLOResult) -> Result<Option<PuzzleFace>>;
+    fn ingest_frame(&mut self, frame: &mut Frame, face: PuzzleFace, facelets: &YOLOResult) -> Result<()>;
     fn draw_state(&self, img: &mut Mat) -> Result<()>;
     fn compare_to_puzzle(&self) -> (usize, usize, usize);
     fn reset(&mut self);
@@ -43,20 +44,19 @@ pub struct CubePredictionNxN<const N: usize> {
 }
 
 impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
-    fn find_face(&mut self, mat: &Mat, face: &YOLOResult) -> Result<Option<PuzzleFace>> {
-        get_face_poly(mat, face, 4)
+    fn find_face(&mut self, frame: &mut Frame, face: &YOLOResult) -> Result<Option<PuzzleFace>> {
+        get_face_poly(frame, face, 4)
     }
 
-    fn ingest_frame(&mut self, img: &Mat, face: PuzzleFace, facelets: &YOLOResult) -> Result<()> {
+    fn ingest_frame(&mut self, frame: &mut Frame, face: PuzzleFace, facelets: &YOLOResult) -> Result<()> {
         let facelets = facelets.bboxes.as_ref()
             .and_then(|boxes|get_n_facelets(&face, boxes.clone(), N * N, 0f32, 10f32).transpose())
             .transpose()?;
         if let Some(facelets) = facelets {
-            let mut img = img.clone();
             for i in 1..face.len() {
-                opencv::imgproc::line(&mut img, face.get(i - 1).unwrap(), face.get(i).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
+                opencv::imgproc::line(&mut frame.output, face.get(i - 1).unwrap(), face.get(i).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
             }
-            opencv::imgproc::line(&mut img, face.get(face.len() - 1).unwrap(), face.get(0).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
+            opencv::imgproc::line(&mut frame.output, face.get(face.len() - 1).unwrap(), face.get(0).unwrap(), (0, 0, 0).into(), 3, LINE_8, 0)?;
 
             let moments = opencv::imgproc::moments_def(&face)?;
             let face_center = Point2::new((moments.m10 / moments.m00) as f32, (moments.m01 / moments.m00) as f32);
@@ -66,12 +66,11 @@ impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
                 for y in 0..N {
                     let g = &grid[x][y];
                     let c = g.cxcy();
-                    opencv::imgproc::circle(&mut img, Point::new(c.x() as i32, c.y() as i32), 9, (0, 0, 0).into(), FILLED, LINE_8, 0)?;
-                    opencv::imgproc::circle(&mut img, Point::new(c.x() as i32, c.y() as i32), 7, COLORS[g.id() - 2].into(), FILLED, LINE_8, 0)?;
+                    opencv::imgproc::circle(&mut frame.output, Point::new(c.x() as i32, c.y() as i32), 9, (0, 0, 0).into(), FILLED, LINE_8, 0)?;
+                    opencv::imgproc::circle(&mut frame.output, Point::new(c.x() as i32, c.y() as i32), 7, COLORS[g.id() - 2].into(), FILLED, LINE_8, 0)?;
                 }
             }
             self.ingest_face_prediction(&grid);
-            opencv::highgui::imshow("dbg", &img)?;
         }
         Ok(())
     }
@@ -107,51 +106,19 @@ impl <const N: usize> PuzzleDetector for CubePredictionNxN<N> {
     fn compare_to_puzzle(&self) -> (usize, usize, usize) {
         let mut sum_right = 0;
         let mut sum_wrong = 0;
-        let mut available_cube_faces = self.cube.faces.clone().to_vec();
-        let mut available_prediction_faces = self.faces.clone().to_vec();
-        for _ in 0..6  {
-            // println!("\nRun\n");
-            //This can probably be optimized significantly. We only need to do the cartesian matching once
-            let (face_idx, pred_idx, (wrong, right)) = available_cube_faces.iter()
-                .enumerate()
-                .cartesian_product(available_prediction_faces.iter().enumerate())
-                .map(|((fidx, face), (pidx, pred))|{
-                    let mut face = (*face).clone();
-                    let mut min_wrong = usize::MAX;
-                    let mut max_right = 0;
-                    for _ in 0..4 {
-                        rotate90(&mut face.stickers);
-                        let mut wrong = 0;
-                        let mut right = 0;
-                        for x in 0..N {
-                            for y in 0..N {
-                                let (cid, conf) = pred.facelets[x][y].get_best();
-                                if conf <= OrderedFloat(0.7f32) {
-                                    continue
-                                } else if cid == face.stickers[x][y] {
-                                    right += 1;
-                                } else {
-                                    wrong += 1;
-                                }
-                            }
-                        }
-                        if min_wrong > wrong || (min_wrong == wrong && max_right < right) {
-                            min_wrong = wrong;
-                            max_right = right;
-                        }
+        for fidx in 0..6  {
+            for x in 0..N {
+                for y in 0..N {
+                    let (cid, conf) = self.faces[fidx].facelets[x][y].get_best();
+                    if conf <= OrderedFloat(0.7f32) {
+                        continue
+                    } else if cid == self.cube.faces[fidx].stickers[x][y] {
+                        sum_right += 1;
+                    } else if self.faces[fidx].facelets[x][y].count > 5 {
+                        sum_wrong += 1;
                     }
-                    (fidx, pidx, (min_wrong, max_right))
-                })
-                // .max_by_key(|(_, _, (min, max))|*max)
-                .max_by_key(|(_, _, (min, max))|(-(*min as isize), *max))
-                .unwrap();
-            // println!("{:?}", available_cube_faces[face_idx].stickers);
-            // println!("{:?}", available_prediction_faces[pred_idx].facelets);
-            // println!("Best fit: {right} {wrong}");
-            sum_right += right;
-            sum_wrong += wrong;
-            available_cube_faces.remove(face_idx);
-            available_prediction_faces.remove(pred_idx);
+                }
+            }
         }
         (sum_right, sum_wrong, N * N * 6 - sum_right - sum_wrong)
     }
@@ -183,10 +150,10 @@ fn get_n_facelets(face: &PuzzleFace, mut facelets: Vec<Bbox>, n: usize, max_diff
     Ok(None)
 }
 
-fn get_face_poly(img: &Mat, face: &YOLOResult, face_vertices: usize) -> Result<Option<Vector<Point>>> {
+fn get_face_poly(frame: &mut Frame, face: &YOLOResult, face_vertices: usize) -> Result<Option<Vector<Point>>> {
     if let Some(masks) = face.masks() {
         let mat = Mat::from_bytes::<u8>(masks[0].as_slice())?;
-        let mat = mat.reshape(0, img.size()?.height)?;
+        let mat = mat.reshape(0, frame.input.size()?.height)?;
         let mut contours: Vector<Mat> = Vector::new();
         opencv::imgproc::find_contours(&mat, &mut contours, RETR_TREE.into(), CHAIN_APPROX_SIMPLE.into(), Point::default())?;
 
@@ -270,7 +237,7 @@ impl <const N: usize> CubePredictionNxN<N> {
         let ((idx, _), rotation) = self.cube.faces.iter()
             .enumerate()
             .cartesian_product(rotations.into_iter())
-            .min_by_key(|((_, c_face), p_face)| {
+            .min_by_key(|((cidx, c_face), p_face)| {
                 let sum: OrderedFloat<f32> = (0..N).cartesian_product(0..N)
                     .map(|(x, y)|{
                         let c_color = c_face.stickers[x][y];
@@ -282,6 +249,7 @@ impl <const N: usize> CubePredictionNxN<N> {
                         }
                     })
                     .sum();
+                // println!("{cidx}: {sum}");
                 sum
             })
             .unwrap();
@@ -415,18 +383,14 @@ impl <const COLORS: usize> Debug for FaceletPrediction<COLORS> {
 impl <'a, 'b, const COLORS: usize> AddAssign<&'b ColorPrediction> for &'a mut FaceletPrediction<COLORS> {
 
     fn add_assign(&mut self, rhs: &'b ColorPrediction) {
-        println!("Pre {:?}", self.probabilities);
-        println!("Add {rhs:?}");
         for x in 0..COLORS {
             let new_probability = if x == rhs.0 {
                 self.probabilities[x] * self.count as f32 + rhs.1
             } else {
                 self.probabilities[x] * self.count as f32
             };
-            println!("New probability {new_probability}");
             self.probabilities[x] = new_probability / (self.count + 1) as f32;
         }
-        println!("Post {:?}", self.probabilities);
         self.count += 1;
     }
 }

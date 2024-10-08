@@ -1,120 +1,69 @@
-use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::path::Path;
 use clap::Parser;
-use log::{info, LevelFilter};
-use opencv::{highgui, prelude::*, videoio};
-use opencv::imgproc::{FONT_HERSHEY_SIMPLEX, LINE_8};
-use opencv::videoio::VideoWriter;
+use log::LevelFilter;
+use opencv::prelude::*;
+use serde::Deserialize;
 use simple_logger::SimpleLogger;
-use scramble_checker::{OrtEP, YOLOTask, YOLOv8};
-use scramble_checker::detector::{CubePredictionNxN, PuzzleDetector};
-use scramble_checker::puzzle::{Cube, CubeAlgorithm};
-use scramble_checker::session::{DetectionSession, Output};
 
-#[derive(Parser, Clone)]
-#[command(author, version, about, long_about = None)]
-pub struct Args {
-    #[arg(long, default_value = "333", value_parser = ["222", "333", "444", "555"])]
-    pub puzzle: String,
-    #[arg(long, required = true)]
-    pub scramble: String,
-}
-
-const MODEL_COLOR_SCHEME: [usize; 6] = [4, 5, 1, 0, 2, 3];
+use scramble_checker::{Args, init_face_model, init_facelet_model, Mode, run_detection, YOLOv8};
 
 fn main() -> anyhow::Result<()> {
-    SimpleLogger::new()
-        .with_module_level("timings", LevelFilter::Info)
-        .with_level(LevelFilter::Debug)
-        .init()?;
 
     let args = Args::parse();
 
-    let alg = CubeAlgorithm::from_str(args.scramble.as_str())?;
+    let facelet_model = init_facelet_model()?;
+    let face_model = init_face_model()?;
 
-    let detector: Box<dyn PuzzleDetector> = match args.puzzle.as_str() {
-        "222" => {
-            let mut cube = Cube::<2>::new_with_scheme(MODEL_COLOR_SCHEME);
-            cube.turn_alg(&alg);
-            Box::new(CubePredictionNxN::<2>::new(cube))
-        },
-        "333" => {
-            let mut cube = Cube::<3>::new_with_scheme(MODEL_COLOR_SCHEME);
-            cube.turn_alg(&alg);
-            Box::new(CubePredictionNxN::<3>::new(cube))
-        },
-        "444" => {
-            let mut cube = Cube::<4>::new_with_scheme(MODEL_COLOR_SCHEME);
-            cube.turn_alg(&alg);
-            Box::new(CubePredictionNxN::<4>::new(cube))
-        },
-        "555" => {
-            let mut cube = Cube::<5>::new_with_scheme(MODEL_COLOR_SCHEME);
-            cube.turn_alg(&alg);
-            Box::new(CubePredictionNxN::<5>::new(cube))
-        },
-        _ => unreachable!()
-    };
-
-
-    let mut video_in = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
-    // let mut video_in = videoio::VideoCapture::from_file_def("video.mp4")?;
-    let opened = videoio::VideoCapture::is_opened(&video_in)?;
-
-    if !opened {
-        panic!("Unable to open default camera!");
+    if args.mode == Mode::Test {
+        SimpleLogger::new()
+            .with_level(LevelFilter::Off)
+            .init()?;
+        run_tests(&face_model, &facelet_model)?;
+    } else {
+        SimpleLogger::new()
+            .with_module_level("timings", LevelFilter::Info)
+            .with_level(LevelFilter::Debug)
+            .init()?;
+        run_detection(&face_model, &facelet_model, &args)?;
     }
-
-    let facelet_model = YOLOv8::new(OrtEP::Cuda(0), "facelet.onnx".to_string(), YOLOTask::Detect, 0.3, 0.45)?;
-    facelet_model.summary();
-    let face_model = YOLOv8::new(OrtEP::Cuda(0), "face.onnx".to_string(), YOLOTask::Segment, 0.3, 0.45)?;
-    face_model.summary();
-    let mut frame = Mat::default();
-    video_in.read(&mut frame)?;
-    face_model.run(&frame)?;
-    facelet_model.run(&frame)?;
+    return Ok(())
+}
 
 
-    let fourcc_code = VideoWriter::fourcc('X', 'V', 'I', 'D')?;
-    let file = VideoWriter::new("output.avi", fourcc_code, 20.0, frame.size()?, true)?;
+#[derive(Debug, Clone, Deserialize)]
+struct LengthTestCase {
+    puzzle: String,
+    scramble: String,
+    file: String,
+    correct: bool
+}
 
-    let mut session = DetectionSession {
-        video_input: video_in,
-        face_model: &face_model,
-        facelet_model: &facelet_model,
-        detector: detector,
-        outputs: vec![Output::Window("output".to_string()), Output::File(file)],
-    };
-
-    let mut cooldown_until = Instant::now();
-    let mut last_result = 0.5;
-    loop {
-        // highgui::wait_key_def()?;
-        highgui::poll_key()?; // Needs to be called to refresh UI, we don't care about keys
-        if cooldown_until > Instant::now() {
-            let mut frame = session.read_frame()?;
-            session.draw_frame(||{
-                let (text, color) = if last_result > 0.5 {
-                    ("Correct", (0, 255, 0))
-                } else {
-                    ("Incorrect", (0, 0, 255))
-                };
-                opencv::imgproc::put_text(&mut frame, text, opencv::core::Point::new(40, 40), FONT_HERSHEY_SIMPLEX, 1.0, color.into(), 3, LINE_8, false)?;
-                Ok(frame)
-            })?;
-        } else if session.process_frame()? {
-            let conf = session.get_confidence();
-            if conf > 0.9 {
-                info!("Correct!");
-                session.reset();
-                last_result = conf;
-                cooldown_until = Instant::now() + Duration::from_secs(3);
-            } else if conf < 0.1 {
-                info!("Incorrect!");
-                session.reset();
-                last_result = conf;
-                cooldown_until = Instant::now() + Duration::from_secs(3);
-            }
+fn run_tests(face_model: &YOLOv8, facelet_model: &YOLOv8) -> anyhow::Result<()>{
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_path("tests/tests.csv")
+        .unwrap();
+    for result in reader.deserialize() {
+        let record: LengthTestCase = result.expect("A CSV record");
+        println!("Testing {}", record.file);
+        if run_test(&record, &face_model, &facelet_model)? {
+            println!("Okay");
+        } else {
+            println!("Not okay");
         }
     }
+    Ok(())
+}
+
+fn run_test(test: &LengthTestCase, face_model: &YOLOv8, facelet_model: &YOLOv8) -> anyhow::Result<bool> {
+    let file = std::env::current_dir()?.join("tests").join(test.file.clone()).to_str().unwrap().to_string();
+    let args = Args {
+        puzzle: test.puzzle.clone(),
+        scramble: test.scramble.clone(),
+        file: Some(file),
+        camera: 0,
+        mode: Mode::Test,
+    };
+    let result = run_detection(face_model, facelet_model, &args)?;
+    return Ok(result.is_some() && test.correct == result.unwrap())
 }
