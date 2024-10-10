@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Add, AddAssign};
 
@@ -220,7 +221,7 @@ impl <const N: usize> CubePredictionNxN<N> {
         for x in 0..N {
             for y in 0..N {
                 let g = grid[x][y];
-                predictions[x][y] = (g.id() - 2, OrderedFloat(g.confidence()));
+                predictions[x][y] = (g.id() - 2, max(OrderedFloat(g.confidence()), OrderedFloat(0.8)));
             }
         }
         self.find_best_fit_min_squared_error(&predictions)
